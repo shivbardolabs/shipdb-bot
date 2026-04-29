@@ -6,13 +6,13 @@ import type { SlackBlock } from "./slack";
 export async function getClients(): Promise<{ text: string; blocks: SlackBlock[] }> {
   const sql = getDb();
   const rows = await sql`
-    SELECT t.id, t.name, t.slug, t.status, t."plan", t."createdAt",
+    SELECT t.id, t.name, t.slug, t.status, t."subscriptionTier", t."createdAt",
            COUNT(DISTINCT u.id) as user_count,
            COUNT(DISTINCT c.id) as customer_count
     FROM "Tenant" t
     LEFT JOIN "User" u ON u."tenantId" = t.id
     LEFT JOIN "Customer" c ON c."tenantId" = t.id AND c."deletedAt" IS NULL
-    GROUP BY t.id, t.name, t.slug, t.status, t."plan", t."createdAt"
+    GROUP BY t.id, t.name, t.slug, t.status, t."subscriptionTier", t."createdAt"
     ORDER BY t."createdAt" DESC
   `;
 
@@ -35,7 +35,7 @@ export async function getClients(): Promise<{ text: string; blocks: SlackBlock[]
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `${status} *${row.name}*\n\`${row.slug}\` · Plan: \`${row.plan || "—"}\` · Since: ${created}`,
+        text: `${status} *${row.name}*\n\`${row.slug}\` · Tier: \`${row.subscriptionTier || "—"}\` · Since: ${created}`,
       },
       fields: [
         { type: "mrkdwn", text: `*Users:* ${row.user_count}` },
@@ -100,7 +100,7 @@ export async function getClientDetails(search: string): Promise<{ text: string; 
       fields: [
         { type: "mrkdwn", text: `*Slug:*\n\`${t.slug}\`` },
         { type: "mrkdwn", text: `*Status:*\n${status}` },
-        { type: "mrkdwn", text: `*Plan:*\n${t.plan || "—"}` },
+        { type: "mrkdwn", text: `*Tier:*\n${t.subscriptionTier || "—"}` },
         { type: "mrkdwn", text: `*Created:*\n${t.createdAt ? new Date(t.createdAt as string).toLocaleDateString() : "N/A"}` },
         { type: "mrkdwn", text: `*Customers:*\n${custCount[0].count}` },
         { type: "mrkdwn", text: `*Packages:*\n${pkgCount[0].count}` },
@@ -324,7 +324,7 @@ export async function getPackages(statusFilter?: string): Promise<{ text: string
 export async function getStores(): Promise<{ text: string; blocks: SlackBlock[] }> {
   const sql = getDb();
   const rows = await sql`
-    SELECT s.id, s.name, s."storeNumber", s.address, s.city, s.state, s.zip,
+    SELECT s.id, s.name, s."storeNumber", s.address, s.city, s.state, s."zipCode",
            s.phone, s.email, s.status, s."createdAt",
            t.name as tenant_name
     FROM "Store" s
@@ -350,7 +350,7 @@ export async function getStores(): Promise<{ text: string; blocks: SlackBlock[] 
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `${status} *${s.name || "Unnamed Store"}* ${s.storeNumber ? `(#${s.storeNumber})` : ""}\n${s.address || ""}${s.city ? `, ${s.city}` : ""}${s.state ? `, ${s.state}` : ""} ${s.zip || ""}\n${s.phone || ""} · ${s.email || ""} · Client: ${s.tenant_name || "—"}`,
+        text: `${status} *${s.name || "Unnamed Store"}* ${s.storeNumber ? `(#${s.storeNumber})` : ""}\n${s.address || ""}${s.city ? `, ${s.city}` : ""}${s.state ? `, ${s.state}` : ""} ${s.zipCode || ""}\n${s.phone || ""} · ${s.email || ""} · Client: ${s.tenant_name || "—"}`,
       },
     });
   }
@@ -363,14 +363,21 @@ export async function getStores(): Promise<{ text: string; blocks: SlackBlock[] 
 export async function getStats(): Promise<{ text: string; blocks: SlackBlock[] }> {
   const sql = getDb();
 
-  const [tenants, users, customers, packages, stores, logins] = await Promise.all([
+  const [tenants, users, customers, packages, stores] = await Promise.all([
     sql`SELECT COUNT(*) as count, COUNT(*) FILTER (WHERE status = 'active') as active FROM "Tenant"`,
     sql`SELECT COUNT(*) as count FROM "User"`,
     sql`SELECT COUNT(*) as count, COUNT(*) FILTER (WHERE status = 'active') as active FROM "Customer" WHERE "deletedAt" IS NULL`,
     sql`SELECT COUNT(*) as count FROM "Package"`,
     sql`SELECT COUNT(*) as count FROM "Store"`,
-    sql`SELECT COUNT(*) as count FROM "LoginSession" WHERE "createdAt" > NOW() - INTERVAL '7 days'`,
   ]);
+
+  // LoginSession may not exist in all environments
+  let logins;
+  try {
+    logins = await sql`SELECT COUNT(*) as count FROM "LoginSession" WHERE "createdAt" > NOW() - INTERVAL '7 days'`;
+  } catch {
+    logins = [{ count: "N/A" }];
+  }
 
   const blocks: SlackBlock[] = [
     { type: "header", text: { type: "plain_text", text: "📊 ShipOS Database Overview" } },
