@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { after } from "next/server";
 import { verifySlackRequest, postToResponseUrl } from "@/lib/slack";
 import {
   getClients,
@@ -48,56 +49,67 @@ const HELP_BLOCKS = [
 ];
 
 export async function POST(req: NextRequest) {
-  // Read the raw body for signature verification
-  const rawBody = await req.text();
-  const params = new URLSearchParams(rawBody);
+  try {
+    // Read the raw body for signature verification
+    const rawBody = await req.text();
+    const params = new URLSearchParams(rawBody);
 
-  // Verify Slack signature
-  const signingSecret = process.env.SLACK_SIGNING_SECRET;
-  if (signingSecret) {
-    const timestamp = req.headers.get("x-slack-request-timestamp") || "";
-    const signature = req.headers.get("x-slack-signature") || "";
-    if (!verifySlackRequest(signingSecret, timestamp, rawBody, signature)) {
-      return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
+    // Verify Slack signature
+    const signingSecret = process.env.SLACK_SIGNING_SECRET;
+    if (signingSecret) {
+      const timestamp = req.headers.get("x-slack-request-timestamp") || "";
+      const signature = req.headers.get("x-slack-signature") || "";
+      if (!verifySlackRequest(signingSecret, timestamp, rawBody, signature)) {
+        return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
+      }
     }
+
+    const text = (params.get("text") || "").trim();
+    const responseUrl = params.get("response_url") || "";
+    const userId = params.get("user_id") || "";
+
+    // Parse the subcommand
+    const parts = text.split(/\s+/);
+    const subcommand = (parts[0] || "help").toLowerCase();
+    const args = parts.slice(1).join(" ");
+
+    // Use Next.js `after()` to keep the function alive after responding.
+    // This lets us acknowledge Slack immediately (< 3s) and then do the
+    // actual DB query + send results via response_url.
+    after(async () => {
+      try {
+        await processCommand(subcommand, args, responseUrl, userId);
+      } catch (err) {
+        console.error("Command processing error:", err);
+        await postToResponseUrl(
+          responseUrl,
+          [
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: `❌ *Error:* ${err instanceof Error ? err.message : "Unknown error"}`,
+              },
+            },
+          ],
+          "Error processing command",
+          true
+        );
+      }
+    });
+
+    // Acknowledge immediately (Slack requires response within 3 seconds)
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: "⏳ Querying database…",
+    });
+  } catch (err) {
+    console.error("Slash command handler error:", err);
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: `❌ Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+    });
   }
-
-  const text = (params.get("text") || "").trim();
-  const responseUrl = params.get("response_url") || "";
-  const userId = params.get("user_id") || "";
-
-  // Parse the subcommand
-  const parts = text.split(/\s+/);
-  const subcommand = (parts[0] || "help").toLowerCase();
-  const args = parts.slice(1).join(" ");
-
-  // Acknowledge immediately (Slack requires response within 3 seconds)
-  // Then process in background using response_url
-  const ackResponse = NextResponse.json({
-    response_type: "ephemeral",
-    text: "⏳ Querying database…",
-  });
-
-  // Process the query asynchronously using response_url
-  processCommand(subcommand, args, responseUrl, userId).catch((err) => {
-    console.error("Command processing error:", err);
-    postToResponseUrl(
-      responseUrl,
-      [
-        {
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text: `❌ *Error:* ${err instanceof Error ? err.message : "Unknown error"}`,
-          },
-        },
-      ],
-      "Error processing command",
-      true
-    );
-  });
-
-  return ackResponse;
 }
 
 async function processCommand(
@@ -209,6 +221,6 @@ async function processCommand(
       };
   }
 
-  // Send the actual response
+  // Send the actual response via Slack's response_url
   await postToResponseUrl(responseUrl, result.blocks as never[], result.text, true);
 }
