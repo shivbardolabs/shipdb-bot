@@ -12,6 +12,12 @@ import {
   searchAll,
   runRawQuery,
 } from "@/lib/queries";
+import {
+  subscribe,
+  unsubscribe,
+  listSubscriptions,
+  WATCHABLE_TABLES,
+} from "@/lib/subscriptions";
 
 const HELP_BLOCKS = [
   {
@@ -24,6 +30,7 @@ const HELP_BLOCKS = [
     text: {
       type: "mrkdwn",
       text: [
+        "*Queries:*",
         "`/shipdb stats` — Database overview (counts for clients, users, customers, packages)",
         "`/shipdb clients` — List all clients (tenants)",
         "`/shipdb client <name>` — Details for a specific client",
@@ -33,6 +40,13 @@ const HELP_BLOCKS = [
         "`/shipdb stores` — List all stores",
         "`/shipdb search <term>` — Search across clients, users, and customers",
         "`/shipdb sql <SELECT query>` — Run a read-only SQL query",
+        "",
+        "*Subscriptions:*",
+        "`/shipdb subscribe <table>` — Subscribe this channel to new-row notifications",
+        "`/shipdb unsubscribe <table>` — Unsubscribe this channel",
+        "`/shipdb subscriptions` — List active subscriptions for this channel",
+        `_Available tables: ${Object.keys(WATCHABLE_TABLES).join(", ")}_`,
+        "",
         "`/shipdb help` — Show this help message",
       ].join("\n"),
     },
@@ -42,7 +56,7 @@ const HELP_BLOCKS = [
     elements: [
       {
         type: "mrkdwn",
-        text: "🔒 All queries are *read-only*. Results are visible only to you (ephemeral).",
+        text: "🔒 All queries are *read-only*. Results are visible only to you (ephemeral). Subscription notifications are posted publicly to the channel.",
       },
     ],
   },
@@ -67,6 +81,7 @@ export async function POST(req: NextRequest) {
     const text = (params.get("text") || "").trim();
     const responseUrl = params.get("response_url") || "";
     const userId = params.get("user_id") || "";
+    const channelId = params.get("channel_id") || "";
 
     // Parse the subcommand
     const parts = text.split(/\s+/);
@@ -74,11 +89,9 @@ export async function POST(req: NextRequest) {
     const args = parts.slice(1).join(" ");
 
     // Use Next.js `after()` to keep the function alive after responding.
-    // This lets us acknowledge Slack immediately (< 3s) and then do the
-    // actual DB query + send results via response_url.
     after(async () => {
       try {
-        await processCommand(subcommand, args, responseUrl, userId);
+        await processCommand(subcommand, args, responseUrl, userId, channelId);
       } catch (err) {
         console.error("Command processing error:", err);
         await postToResponseUrl(
@@ -116,7 +129,8 @@ async function processCommand(
   subcommand: string,
   args: string,
   responseUrl: string,
-  userId: string
+  userId: string,
+  channelId: string
 ) {
   let result: { text: string; blocks: unknown[] };
 
@@ -172,7 +186,6 @@ async function processCommand(
       break;
 
     case "sql": {
-      // Check if user is allowed to run raw SQL
       const allowedUsers = process.env.SQL_ALLOWED_USER_IDS;
       if (allowedUsers && !allowedUsers.split(",").includes(userId)) {
         result = {
@@ -205,6 +218,51 @@ async function processCommand(
       }
       break;
     }
+
+    // ─── Subscription Commands ───────────────────────────
+    case "subscribe": {
+      if (!args) {
+        const available = Object.keys(WATCHABLE_TABLES).join(", ");
+        result = {
+          text: "Please specify a table",
+          blocks: [
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: `Usage: \`/shipdb subscribe <table>\`\n\nAvailable tables: ${available}`,
+              },
+            },
+          ],
+        };
+      } else {
+        const tableKey = args.split(/\s+/)[0].toLowerCase();
+        result = await subscribe(tableKey, channelId, userId);
+      }
+      break;
+    }
+
+    case "unsubscribe": {
+      if (!args) {
+        result = {
+          text: "Please specify a table",
+          blocks: [
+            {
+              type: "section",
+              text: { type: "mrkdwn", text: "Usage: `/shipdb unsubscribe <table>`" },
+            },
+          ],
+        };
+      } else {
+        const tableKey = args.split(/\s+/)[0].toLowerCase();
+        result = await unsubscribe(tableKey, channelId);
+      }
+      break;
+    }
+
+    case "subscriptions":
+      result = await listSubscriptions(channelId);
+      break;
 
     default:
       result = {
