@@ -52,7 +52,7 @@ export const WATCHABLE_TABLES: Record<
  */
 export async function ensureTables() {
   const sql = getDb();
-  await sql([`
+  await sql`
     CREATE TABLE IF NOT EXISTS "_ShipDbSubscription" (
       id SERIAL PRIMARY KEY,
       channel_id TEXT NOT NULL,
@@ -61,14 +61,14 @@ export async function ensureTables() {
       created_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE(channel_id, table_key)
     )
-  `] as unknown as TemplateStringsArray);
+  `;
 
-  await sql([`
+  await sql`
     CREATE TABLE IF NOT EXISTS "_ShipDbWatermark" (
       table_key TEXT PRIMARY KEY,
       last_checked_at TIMESTAMPTZ DEFAULT NOW()
     )
-  `] as unknown as TemplateStringsArray);
+  `;
 }
 
 /**
@@ -268,12 +268,12 @@ export async function checkForUpdates(): Promise<{ checked: number; notified: nu
     `;
     const lastChecked = watermarks.length > 0 ? watermarks[0].last_checked_at : new Date(0).toISOString();
 
-    // Check for new rows
+    // Check for new rows using sql.query() for dynamic table/column names
+    // (table and column come from our hardcoded WATCHABLE_TABLES, not user input)
     try {
-      const newRows = await sql(
-        [`SELECT * FROM ${config.table} WHERE ${config.timestampCol} > '`, `' ORDER BY ${config.timestampCol} DESC LIMIT 20`] as unknown as TemplateStringsArray,
-        lastChecked
-      );
+      const queryStr = `SELECT * FROM ${config.table} WHERE ${config.timestampCol} > $1 ORDER BY ${config.timestampCol} DESC LIMIT 20`;
+      const result = await sql.query(queryStr, [lastChecked]);
+      const newRows = Array.isArray(result) ? result : (result as { rows: Record<string, unknown>[] }).rows;
 
       if (newRows.length > 0) {
         // Get channels subscribed to this table
