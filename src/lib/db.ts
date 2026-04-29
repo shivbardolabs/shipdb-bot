@@ -47,8 +47,9 @@ export async function runReadOnlyQuery(query: string): Promise<Record<string, un
   }
 
   const sql = getDb();
-  // neon() returns a tagged template function — to pass a raw string
-  // we wrap it as a TemplateStringsArray
-  const rows = await sql([trimmed] as unknown as TemplateStringsArray);
+  // Use sql.query() for conventional (non-template) string queries
+  const result = await sql.query(trimmed);
+  // sql.query() returns { rows, ... } — extract the rows array
+  const rows = Array.isArray(result) ? result : (result as { rows: Record<string, unknown>[] }).rows;
   return rows as Record<string, unknown>[];
 }
