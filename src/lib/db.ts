@@ -1,13 +1,29 @@
-import { neon } from "@neondatabase/serverless";
+import postgres from "postgres";
 
 /**
- * Create a Neon SQL client using the DATABASE_URL env var.
- * Uses HTTP-based queries — perfect for Vercel serverless.
+ * Singleton SQL client backed by postgres.js.
+ * Connects to Aurora PostgreSQL (via RDS Proxy) using the DATABASE_URL env var.
+ *
+ * postgres.js manages an internal connection pool. For Vercel serverless we
+ * keep `max` low and set a short `idle_timeout` so connections are released
+ * between invocations.
  */
+let _sql: ReturnType<typeof postgres> | null = null;
+
 export function getDb() {
+  if (_sql) return _sql;
+
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL is not configured");
-  return neon(url);
+
+  _sql = postgres(url, {
+    max: 5,             // small pool — fine behind RDS Proxy
+    idle_timeout: 20,   // seconds before idle connections close
+    connect_timeout: 15, // seconds to wait for a new connection
+    ssl: "require",     // Aurora requires SSL
+  });
+
+  return _sql;
 }
 
 /**
@@ -47,9 +63,7 @@ export async function runReadOnlyQuery(query: string): Promise<Record<string, un
   }
 
   const sql = getDb();
-  // Use sql.query() for conventional (non-template) string queries
-  const result = await sql.query(trimmed);
-  // sql.query() returns { rows, ... } — extract the rows array
-  const rows = Array.isArray(result) ? result : (result as { rows: Record<string, unknown>[] }).rows;
+  // sql.unsafe() executes a raw query string (not a tagged template)
+  const rows = await sql.unsafe(trimmed);
   return rows as Record<string, unknown>[];
 }
