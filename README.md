@@ -1,6 +1,6 @@
 # 📦 ShipDB Bot
 
-A Slack bot for querying the ShipOS Pro database. Deployed on Vercel, connects to Neon PostgreSQL.
+A Slack bot for querying the ShipOS Pro database. Deployed on Vercel, connects to Aurora PostgreSQL (via RDS Proxy).
 
 ## Available Commands
 
@@ -44,7 +44,7 @@ All responses are **ephemeral** (only visible to the user who ran the command).
 1. Push this repo to your GitHub org
 2. Go to [vercel.com](https://vercel.com) → **New Project** → Import the repo
 3. Add environment variables:
-   - `DATABASE_URL` — Your Neon PostgreSQL connection string
+   - `DATABASE_URL` — Your Aurora PostgreSQL connection string (RDS Proxy endpoint)
    - `SLACK_BOT_TOKEN` — The `xoxb-...` token from step 1
    - `SLACK_SIGNING_SECRET` — From Slack App > Basic Information
    - `SQL_ALLOWED_USER_IDS` — (Optional) Comma-separated Slack user IDs who can run raw SQL
@@ -87,12 +87,12 @@ If left empty, all workspace members can run raw SQL queries (still restricted t
 Slack (/shipdb command)
   → Vercel Serverless Function (POST /api/slack/commands)
     → Parse command + verify Slack signature
-    → Query Neon PostgreSQL via @neondatabase/serverless (HTTP)
+    → Query Aurora PostgreSQL via postgres.js (connection-pooled)
     → Format response with Slack Block Kit
   → Slack (ephemeral message with results)
 ```
 
-Uses `@neondatabase/serverless` for HTTP-based database queries, which is ideal for Vercel's serverless environment (no persistent connections needed).
+Uses `postgres` (postgres.js) for database queries with built-in connection pooling, connecting to Aurora PostgreSQL through RDS Proxy for efficient serverless operation.
 
 ## Local Development
 

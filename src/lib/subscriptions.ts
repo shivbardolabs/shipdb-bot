@@ -268,12 +268,11 @@ export async function checkForUpdates(): Promise<{ checked: number; notified: nu
     `;
     const lastChecked = watermarks.length > 0 ? watermarks[0].last_checked_at : new Date(0).toISOString();
 
-    // Check for new rows using sql.query() for dynamic table/column names
+    // Check for new rows using sql.unsafe() for dynamic table/column names
     // (table and column come from our hardcoded WATCHABLE_TABLES, not user input)
     try {
       const queryStr = `SELECT * FROM ${config.table} WHERE ${config.timestampCol} > $1 ORDER BY ${config.timestampCol} DESC LIMIT 20`;
-      const result = await sql.query(queryStr, [lastChecked]);
-      const newRows = Array.isArray(result) ? result : (result as { rows: Record<string, unknown>[] }).rows;
+      const newRows = await sql.unsafe(queryStr, [lastChecked]) as Record<string, unknown>[];
 
       if (newRows.length > 0) {
         // Get channels subscribed to this table
