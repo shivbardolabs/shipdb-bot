@@ -15,9 +15,26 @@ A Slack bot for querying the ShipOS Pro database. Deployed on Vercel, connects t
 | `/shipdb stores` | List all stores with addresses |
 | `/shipdb search <term>` | Search across clients, users, and customers |
 | `/shipdb sql <query>` | Run a read-only SELECT query (can be restricted to specific users) |
+| `/shipdb env` | Show available environments and their status |
 | `/shipdb help` | Show all commands |
 
 All responses are **ephemeral** (only visible to the user who ran the command).
+
+### Environment Targeting
+
+Append `--env dev`, `--env staging`, or `--env prod` to any query command to target a specific database:
+
+```
+/shipdb stats --env dev          # Dev database overview
+/shipdb clients --env staging    # List clients on staging
+/shipdb sql SELECT COUNT(*) FROM "User" --env dev
+```
+
+If no `--env` flag is provided, queries default to **production**.
+
+Non-prod results include an environment badge so you always know which database you're looking at.
+
+Aliases: `production` → `prod`, `stg` → `staging`.
 
 ## Setup
 
@@ -29,7 +46,7 @@ All responses are **ephemeral** (only visible to the user who ran the command).
    - Command: `/shipdb`
    - Request URL: `https://YOUR-VERCEL-URL/api/slack/commands`
    - Short Description: `Query the ShipOS Pro database`
-   - Usage Hint: `[stats | clients | client <name> | users | customers | packages | stores | search <term> | sql <query>]`
+   - Usage Hint: `[stats | clients | client <name> | users | customers | packages | stores | search <term> | sql <query> | env] [--env dev|staging|prod]`
 4. Go to **OAuth & Permissions** → add Bot Token Scopes:
    - `commands`
    - `chat:write`
@@ -44,7 +61,10 @@ All responses are **ephemeral** (only visible to the user who ran the command).
 1. Push this repo to your GitHub org
 2. Go to [vercel.com](https://vercel.com) → **New Project** → Import the repo
 3. Add environment variables:
-   - `DATABASE_URL` — Your Aurora PostgreSQL connection string (RDS Proxy endpoint)
+   - `DATABASE_URL_PROD` — Aurora PostgreSQL connection string for the production database
+   - `DATABASE_URL_STAGING` — Aurora PostgreSQL connection string for the staging database
+   - `DATABASE_URL_DEV` — Aurora PostgreSQL connection string for the dev database
+   - `DATABASE_URL` — (Optional) Fallback for prod if `DATABASE_URL_PROD` is not set
    - `SLACK_BOT_TOKEN` — The `xoxb-...` token from step 1
    - `SLACK_SIGNING_SECRET` — From Slack App > Basic Information
    - `SQL_ALLOWED_USER_IDS` — (Optional) Comma-separated Slack user IDs who can run raw SQL
@@ -59,12 +79,19 @@ vercel --prod
 # Set environment variables in Vercel dashboard
 ```
 
-### 3. Get Your Neon Connection String
+### 3. Get Your Aurora Connection Strings
 
-1. Go to [console.neon.tech](https://console.neon.tech)
-2. Select the `shipos-db` project
-3. Click **Connection Details**
-4. Copy the connection string (format: `postgresql://user:pass@host/db?sslmode=require`)
+The ShipOS Aurora cluster hosts three databases on the same instance:
+
+| Environment | Database | Env Var |
+|-------------|----------|---------|
+| Production | `shipos_prod` | `DATABASE_URL_PROD` |
+| Staging | `shipos_staging` | `DATABASE_URL_STAGING` |
+| Dev | `shipos_dev` | `DATABASE_URL_DEV` |
+
+Connection string format: `postgresql://user:pass@aurora-host:5432/shipos_prod?sslmode=no-verify`
+
+> **Note:** Use `sslmode=no-verify` for Aurora — `sslmode=require` will fail because Amazon's CA isn't in Node's trust store.
 
 ### 4. (Optional) Restrict Raw SQL Access
 
@@ -80,25 +107,27 @@ If left empty, all workspace members can run raw SQL queries (still restricted t
 - **Signature verification**: All incoming requests are verified using the Slack signing secret.
 - **Ephemeral responses**: Query results are only visible to the user who ran the command.
 - **Optional SQL restriction**: Raw SQL can be limited to specific team members.
+- **Environment isolation**: Each environment has its own database connection pool. No cross-env leakage.
 
 ## Architecture
 
 ```
 Slack (/shipdb command)
   → Vercel Serverless Function (POST /api/slack/commands)
-    → Parse command + verify Slack signature
+    → Parse command + --env flag + verify Slack signature
+    → Select database pool (dev / staging / prod)
     → Query Aurora PostgreSQL via postgres.js (connection-pooled)
-    → Format response with Slack Block Kit
+    → Format response with Slack Block Kit + environment badge
   → Slack (ephemeral message with results)
 ```
 
-Uses `postgres` (postgres.js) for database queries with built-in connection pooling, connecting to Aurora PostgreSQL through RDS Proxy for efficient serverless operation.
+Uses `postgres` (postgres.js) for database queries with built-in connection pooling, connecting to Aurora PostgreSQL through RDS Proxy for efficient serverless operation. Each environment maintains its own connection pool (max 5 connections each).
 
 ## Local Development
 
 ```bash
 npm install
-cp .env.example .env.local  # Fill in your values
+cp .env.example .env.local  # Fill in your values (all 3 database URLs)
 npm run dev
 ```
 

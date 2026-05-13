@@ -1,10 +1,38 @@
-import { getDb, runReadOnlyQuery } from "./db";
+import { getDb, runReadOnlyQuery, type DbEnvironment, envLabel } from "./db";
 import type { SlackBlock } from "./slack";
+
+/**
+ * Helper: wraps result blocks with an environment badge at the top.
+ */
+function withEnvBadge(
+  env: DbEnvironment,
+  result: { text: string; blocks: SlackBlock[] }
+): { text: string; blocks: SlackBlock[] } {
+  // Only add the badge for non-prod environments to keep prod output clean
+  if (env === "prod") return result;
+
+  const badge: SlackBlock = {
+    type: "context",
+    elements: [
+      {
+        type: "mrkdwn",
+        text: `📌 Environment: *${envLabel(env)}*`,
+      },
+    ],
+  };
+
+  return {
+    text: `[${env.toUpperCase()}] ${result.text}`,
+    blocks: [badge, ...result.blocks],
+  };
+}
 
 // ─── Clients (Tenants) ────────────────────────────────────────
 
-export async function getClients(): Promise<{ text: string; blocks: SlackBlock[] }> {
-  const sql = getDb();
+export async function getClients(
+  env: DbEnvironment = "prod"
+): Promise<{ text: string; blocks: SlackBlock[] }> {
+  const sql = getDb(env);
   const rows = await sql`
     SELECT t.id, t.name, t.slug, t.status, t."subscriptionTier", t."createdAt",
            COUNT(DISTINCT u.id) as user_count,
@@ -17,10 +45,10 @@ export async function getClients(): Promise<{ text: string; blocks: SlackBlock[]
   `;
 
   if (rows.length === 0) {
-    return {
+    return withEnvBadge(env, {
       text: "No clients found",
       blocks: [{ type: "section", text: { type: "mrkdwn", text: "No clients found in the database." } }],
-    };
+    });
   }
 
   const blocks: SlackBlock[] = [
@@ -44,11 +72,14 @@ export async function getClients(): Promise<{ text: string; blocks: SlackBlock[]
     });
   }
 
-  return { text: `Found ${rows.length} clients`, blocks };
+  return withEnvBadge(env, { text: `Found ${rows.length} clients`, blocks });
 }
 
-export async function getClientDetails(search: string): Promise<{ text: string; blocks: SlackBlock[] }> {
-  const sql = getDb();
+export async function getClientDetails(
+  search: string,
+  env: DbEnvironment = "prod"
+): Promise<{ text: string; blocks: SlackBlock[] }> {
+  const sql = getDb(env);
   const rows = await sql`
     SELECT t.* FROM "Tenant" t
     WHERE LOWER(t.name) LIKE ${"%" + search.toLowerCase() + "%"}
@@ -57,35 +88,31 @@ export async function getClientDetails(search: string): Promise<{ text: string; 
   `;
 
   if (rows.length === 0) {
-    return {
+    return withEnvBadge(env, {
       text: `No client matching "${search}"`,
       blocks: [{ type: "section", text: { type: "mrkdwn", text: `No client matching \`${search}\`` } }],
-    };
+    });
   }
 
   const t = rows[0];
 
-  // Get users for this tenant
   const users = await sql`
     SELECT id, name, email, role, "lastLoginAt" FROM "User"
     WHERE "tenantId" = ${t.id}
     ORDER BY role, name
   `;
 
-  // Get customer count
   const custCount = await sql`
     SELECT COUNT(*) as count FROM "Customer"
     WHERE "tenantId" = ${t.id} AND "deletedAt" IS NULL
   `;
 
-  // Get package count
   const pkgCount = await sql`
     SELECT COUNT(*) as count FROM "Package" p
     JOIN "Customer" c ON p."customerId" = c.id
     WHERE c."tenantId" = ${t.id}
   `;
 
-  // Get store count
   const storeCount = await sql`
     SELECT COUNT(*) as count FROM "Store"
     WHERE "tenantId" = ${t.id}
@@ -127,13 +154,16 @@ export async function getClientDetails(search: string): Promise<{ text: string; 
     }
   }
 
-  return { text: `Client details for ${t.name}`, blocks };
+  return withEnvBadge(env, { text: `Client details for ${t.name}`, blocks });
 }
 
 // ─── Users ────────────────────────────────────────────────────
 
-export async function getUsers(clientFilter?: string): Promise<{ text: string; blocks: SlackBlock[] }> {
-  const sql = getDb();
+export async function getUsers(
+  clientFilter?: string,
+  env: DbEnvironment = "prod"
+): Promise<{ text: string; blocks: SlackBlock[] }> {
+  const sql = getDb(env);
 
   let rows;
   if (clientFilter) {
@@ -159,10 +189,10 @@ export async function getUsers(clientFilter?: string): Promise<{ text: string; b
   }
 
   if (rows.length === 0) {
-    return {
+    return withEnvBadge(env, {
       text: "No users found",
       blocks: [{ type: "section", text: { type: "mrkdwn", text: clientFilter ? `No users found for client \`${clientFilter}\`` : "No users found." } }],
-    };
+    });
   }
 
   const blocks: SlackBlock[] = [
@@ -182,13 +212,16 @@ export async function getUsers(clientFilter?: string): Promise<{ text: string; b
     });
   }
 
-  return { text: `Found ${rows.length} users`, blocks };
+  return withEnvBadge(env, { text: `Found ${rows.length} users`, blocks });
 }
 
 // ─── Customers ────────────────────────────────────────────────
 
-export async function getCustomers(clientFilter?: string): Promise<{ text: string; blocks: SlackBlock[] }> {
-  const sql = getDb();
+export async function getCustomers(
+  clientFilter?: string,
+  env: DbEnvironment = "prod"
+): Promise<{ text: string; blocks: SlackBlock[] }> {
+  const sql = getDb(env);
 
   let rows;
   if (clientFilter) {
@@ -220,10 +253,10 @@ export async function getCustomers(clientFilter?: string): Promise<{ text: strin
   }
 
   if (rows.length === 0) {
-    return {
+    return withEnvBadge(env, {
       text: "No customers found",
       blocks: [{ type: "section", text: { type: "mrkdwn", text: clientFilter ? `No customers found for client \`${clientFilter}\`` : "No customers found." } }],
-    };
+    });
   }
 
   const blocks: SlackBlock[] = [
@@ -243,15 +276,17 @@ export async function getCustomers(clientFilter?: string): Promise<{ text: strin
     });
   }
 
-  return { text: `Found ${rows.length} customers`, blocks };
+  return withEnvBadge(env, { text: `Found ${rows.length} customers`, blocks });
 }
 
 // ─── Packages ─────────────────────────────────────────────────
 
-export async function getPackages(statusFilter?: string): Promise<{ text: string; blocks: SlackBlock[] }> {
-  const sql = getDb();
+export async function getPackages(
+  statusFilter?: string,
+  env: DbEnvironment = "prod"
+): Promise<{ text: string; blocks: SlackBlock[] }> {
+  const sql = getDb(env);
 
-  // Get package counts by status
   const stats = await sql`
     SELECT p.status, COUNT(*) as count
     FROM "Package" p
@@ -259,7 +294,6 @@ export async function getPackages(statusFilter?: string): Promise<{ text: string
     ORDER BY count DESC
   `;
 
-  // Get recent packages
   let recentRows;
   if (statusFilter) {
     recentRows = await sql`
@@ -316,13 +350,15 @@ export async function getPackages(statusFilter?: string): Promise<{ text: string
     });
   }
 
-  return { text: "Package overview", blocks };
+  return withEnvBadge(env, { text: "Package overview", blocks });
 }
 
 // ─── Stores ───────────────────────────────────────────────────
 
-export async function getStores(): Promise<{ text: string; blocks: SlackBlock[] }> {
-  const sql = getDb();
+export async function getStores(
+  env: DbEnvironment = "prod"
+): Promise<{ text: string; blocks: SlackBlock[] }> {
+  const sql = getDb(env);
   const rows = await sql`
     SELECT s.id, s.name, s."storeNumber", s.address, s.city, s.state, s."zipCode",
            s.phone, s.email, s.status, s."createdAt",
@@ -333,10 +369,10 @@ export async function getStores(): Promise<{ text: string; blocks: SlackBlock[] 
   `;
 
   if (rows.length === 0) {
-    return {
+    return withEnvBadge(env, {
       text: "No stores found",
       blocks: [{ type: "section", text: { type: "mrkdwn", text: "No stores found in the database." } }],
-    };
+    });
   }
 
   const blocks: SlackBlock[] = [
@@ -355,13 +391,15 @@ export async function getStores(): Promise<{ text: string; blocks: SlackBlock[] 
     });
   }
 
-  return { text: `Found ${rows.length} stores`, blocks };
+  return withEnvBadge(env, { text: `Found ${rows.length} stores`, blocks });
 }
 
 // ─── Stats ────────────────────────────────────────────────────
 
-export async function getStats(): Promise<{ text: string; blocks: SlackBlock[] }> {
-  const sql = getDb();
+export async function getStats(
+  env: DbEnvironment = "prod"
+): Promise<{ text: string; blocks: SlackBlock[] }> {
+  const sql = getDb(env);
 
   const [tenants, users, customers, packages, stores] = await Promise.all([
     sql`SELECT COUNT(*) as count, COUNT(*) FILTER (WHERE status = 'active') as active FROM "Tenant"`,
@@ -371,7 +409,6 @@ export async function getStats(): Promise<{ text: string; blocks: SlackBlock[] }
     sql`SELECT COUNT(*) as count FROM "Store"`,
   ]);
 
-  // LoginSession may not exist in all environments
   let logins;
   try {
     logins = await sql`SELECT COUNT(*) as count FROM "LoginSession" WHERE "createdAt" > NOW() - INTERVAL '7 days'`;
@@ -395,13 +432,16 @@ export async function getStats(): Promise<{ text: string; blocks: SlackBlock[] }
     },
   ];
 
-  return { text: "ShipOS database overview", blocks };
+  return withEnvBadge(env, { text: "ShipOS database overview", blocks });
 }
 
 // ─── Search ───────────────────────────────────────────────────
 
-export async function searchAll(term: string): Promise<{ text: string; blocks: SlackBlock[] }> {
-  const sql = getDb();
+export async function searchAll(
+  term: string,
+  env: DbEnvironment = "prod"
+): Promise<{ text: string; blocks: SlackBlock[] }> {
+  const sql = getDb(env);
   const like = `%${term.toLowerCase()}%`;
 
   const [tenantHits, userHits, customerHits] = await Promise.all([
@@ -422,10 +462,10 @@ export async function searchAll(term: string): Promise<{ text: string; blocks: S
   const total = tenantHits.length + userHits.length + customerHits.length;
 
   if (total === 0) {
-    return {
+    return withEnvBadge(env, {
       text: `No results for "${term}"`,
       blocks: [{ type: "section", text: { type: "mrkdwn", text: `No results for \`${term}\` across clients, users, or customers.` } }],
-    };
+    });
   }
 
   const blocks: SlackBlock[] = [
@@ -466,27 +506,28 @@ export async function searchAll(term: string): Promise<{ text: string; blocks: S
     }
   }
 
-  return { text: `Found ${total} results for "${term}"`, blocks };
+  return withEnvBadge(env, { text: `Found ${total} results for "${term}"`, blocks });
 }
 
 // ─── Raw SQL ──────────────────────────────────────────────────
 
-export async function runRawQuery(query: string): Promise<{ text: string; blocks: SlackBlock[] }> {
-  const rows = await runReadOnlyQuery(query);
+export async function runRawQuery(
+  query: string,
+  env: DbEnvironment = "prod"
+): Promise<{ text: string; blocks: SlackBlock[] }> {
+  const rows = await runReadOnlyQuery(query, env);
 
   if (rows.length === 0) {
-    return {
+    return withEnvBadge(env, {
       text: "Query returned no results",
       blocks: [{ type: "section", text: { type: "mrkdwn", text: "Query returned 0 rows." } }],
-    };
+    });
   }
 
-  // Format as a code block table
   const cols = Object.keys(rows[0]);
-  const maxRows = 25; // Slack has a character limit
+  const maxRows = 25;
   const displayRows = rows.slice(0, maxRows);
 
-  // Build table
   let table = cols.join(" | ") + "\n";
   table += cols.map(() => "---").join(" | ") + "\n";
   for (const row of displayRows) {
@@ -506,5 +547,5 @@ export async function runRawQuery(query: string): Promise<{ text: string; blocks
     },
   ];
 
-  return { text: `Query returned ${rows.length} rows`, blocks };
+  return withEnvBadge(env, { text: `Query returned ${rows.length} rows`, blocks });
 }

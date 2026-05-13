@@ -1,35 +1,97 @@
 import postgres from "postgres";
 
+// ─── Environment Types ────────────────────────────────────────
+
+export type DbEnvironment = "prod" | "staging" | "dev";
+
+export const VALID_ENVIRONMENTS: DbEnvironment[] = ["prod", "staging", "dev"];
+
+const ENV_LABELS: Record<DbEnvironment, string> = {
+  prod: "🟢 Production",
+  staging: "🟡 Staging",
+  dev: "🔵 Dev",
+};
+
 /**
- * Singleton SQL client backed by postgres.js.
- * Connects to Aurora PostgreSQL (via RDS Proxy) using the DATABASE_URL env var.
- *
- * postgres.js manages an internal connection pool. For Vercel serverless we
- * keep `max` low and set a short `idle_timeout` so connections are released
- * between invocations.
+ * Human-readable label for an environment (e.g. "🟢 Production").
  */
-let _sql: ReturnType<typeof postgres> | null = null;
+export function envLabel(env: DbEnvironment): string {
+  return ENV_LABELS[env];
+}
 
-export function getDb() {
-  if (_sql) return _sql;
+/**
+ * Map of environment → DATABASE_URL env var name.
+ * Falls back to DATABASE_URL for prod if DATABASE_URL_PROD is not set.
+ */
+const ENV_VAR_MAP: Record<DbEnvironment, string[]> = {
+  prod: ["DATABASE_URL_PROD", "DATABASE_URL"],
+  staging: ["DATABASE_URL_STAGING"],
+  dev: ["DATABASE_URL_DEV"],
+};
 
-  const url = process.env.DATABASE_URL;
-  if (!url) throw new Error("DATABASE_URL is not configured");
+// ─── Connection Pool ──────────────────────────────────────────
 
-  _sql = postgres(url, {
-    max: 5,             // small pool — fine behind RDS Proxy
-    idle_timeout: 20,   // seconds before idle connections close
-    connect_timeout: 15, // seconds to wait for a new connection
-    ssl: "require",     // Aurora requires SSL
+/**
+ * Connection pool keyed by environment.
+ * postgres.js manages its own internal pool per instance.
+ */
+const _pools: Partial<Record<DbEnvironment, ReturnType<typeof postgres>>> = {};
+
+/**
+ * Get a database connection for the given environment.
+ * Defaults to "prod" if no environment specified.
+ */
+export function getDb(env: DbEnvironment = "prod") {
+  if (_pools[env]) return _pools[env]!;
+
+  const candidates = ENV_VAR_MAP[env];
+  let url: string | undefined;
+  for (const varName of candidates) {
+    url = process.env[varName];
+    if (url) break;
+  }
+
+  if (!url) {
+    const vars = candidates.join(" or ");
+    throw new Error(
+      `No database URL configured for ${env} environment. Set ${vars} in your environment variables.`
+    );
+  }
+
+  _pools[env] = postgres(url, {
+    max: 5,
+    idle_timeout: 20,
+    connect_timeout: 15,
+    ssl: "require",
   });
 
-  return _sql;
+  return _pools[env]!;
 }
+
+/**
+ * Check which environments have database URLs configured.
+ */
+export function getConfiguredEnvironments(): {
+  env: DbEnvironment;
+  label: string;
+  configured: boolean;
+}[] {
+  return VALID_ENVIRONMENTS.map((env) => {
+    const candidates = ENV_VAR_MAP[env];
+    const configured = candidates.some((v) => !!process.env[v]);
+    return { env, label: ENV_LABELS[env], configured };
+  });
+}
+
+// ─── Read-Only Query Helper ───────────────────────────────────
 
 /**
  * Run a read-only SQL query. Rejects anything that isn't a SELECT or WITH.
  */
-export async function runReadOnlyQuery(query: string): Promise<Record<string, unknown>[]> {
+export async function runReadOnlyQuery(
+  query: string,
+  env: DbEnvironment = "prod"
+): Promise<Record<string, unknown>[]> {
   const trimmed = query.trim().replace(/;$/, "").trim();
   const upper = trimmed.toUpperCase();
 
@@ -55,15 +117,13 @@ export async function runReadOnlyQuery(query: string): Promise<Record<string, un
   ];
 
   for (const keyword of dangerous) {
-    // Match keyword as a standalone word (not part of column names)
     const regex = new RegExp(`\\b${keyword}\\b`, "i");
     if (regex.test(trimmed)) {
       throw new Error(`Query contains forbidden keyword: ${keyword}`);
     }
   }
 
-  const sql = getDb();
-  // sql.unsafe() executes a raw query string (not a tagged template)
+  const sql = getDb(env);
   const rows = await sql.unsafe(trimmed);
   return rows as Record<string, unknown>[];
 }
