@@ -1,4 +1,4 @@
-import { getDb } from "./db";
+import { getDb, type DbEnvironment } from "./db";
 import { postMessage, type SlackBlock } from "./slack";
 
 // Tables that can be subscribed to, with their display config
@@ -48,10 +48,11 @@ export const WATCHABLE_TABLES: Record<
 };
 
 /**
- * Ensure the subscription tables exist. Called lazily on first use.
+ * Ensure the subscription tables exist.
+ * Subscriptions always use the prod database (they're a bot feature, not per-env).
  */
 export async function ensureTables() {
-  const sql = getDb();
+  const sql = getDb("prod");
   await sql`
     CREATE TABLE IF NOT EXISTS "_ShipDbSubscription" (
       id SERIAL PRIMARY KEY,
@@ -97,7 +98,7 @@ export async function subscribe(
   }
 
   await ensureTables();
-  const sql = getDb();
+  const sql = getDb("prod");
 
   try {
     await sql`
@@ -106,7 +107,6 @@ export async function subscribe(
       ON CONFLICT (channel_id, table_key) DO NOTHING
     `;
 
-    // Initialize watermark if not exists
     await sql`
       INSERT INTO "_ShipDbWatermark" (table_key, last_checked_at)
       VALUES (${tableKey}, NOW())
@@ -166,7 +166,7 @@ export async function unsubscribe(
   }
 
   await ensureTables();
-  const sql = getDb();
+  const sql = getDb("prod");
 
   await sql`
     DELETE FROM "_ShipDbSubscription"
@@ -194,7 +194,7 @@ export async function listSubscriptions(
   channelId: string
 ): Promise<{ text: string; blocks: SlackBlock[] }> {
   await ensureTables();
-  const sql = getDb();
+  const sql = getDb("prod");
 
   const rows = await sql`
     SELECT table_key, created_by, created_at
@@ -241,13 +241,12 @@ export async function listSubscriptions(
 
 /**
  * Check all subscriptions for new rows and post notifications.
- * Called by the cron job.
+ * Called by the cron job. Always checks the prod database.
  */
 export async function checkForUpdates(): Promise<{ checked: number; notified: number }> {
   await ensureTables();
-  const sql = getDb();
+  const sql = getDb("prod");
 
-  // Get all unique table_keys that have subscriptions
   const subscribedTables = await sql`
     SELECT DISTINCT table_key FROM "_ShipDbSubscription"
   `;
@@ -262,25 +261,20 @@ export async function checkForUpdates(): Promise<{ checked: number; notified: nu
 
     checked++;
 
-    // Get watermark
     const watermarks = await sql`
       SELECT last_checked_at FROM "_ShipDbWatermark" WHERE table_key = ${key}
     `;
     const lastChecked = watermarks.length > 0 ? watermarks[0].last_checked_at : new Date(0).toISOString();
 
-    // Check for new rows using sql.unsafe() for dynamic table/column names
-    // (table and column come from our hardcoded WATCHABLE_TABLES, not user input)
     try {
       const queryStr = `SELECT * FROM ${config.table} WHERE ${config.timestampCol} > $1 ORDER BY ${config.timestampCol} DESC LIMIT 20`;
       const newRows = await sql.unsafe(queryStr, [lastChecked]) as Record<string, unknown>[];
 
       if (newRows.length > 0) {
-        // Get channels subscribed to this table
         const channels = await sql`
           SELECT channel_id FROM "_ShipDbSubscription" WHERE table_key = ${key}
         `;
 
-        // Build notification
         const blocks: SlackBlock[] = [
           {
             type: "section",
@@ -309,7 +303,6 @@ export async function checkForUpdates(): Promise<{ checked: number; notified: nu
           });
         }
 
-        // Post to each subscribed channel
         for (const { channel_id } of channels) {
           try {
             await postMessage(channel_id as string, blocks, `${newRows.length} new ${config.displayName}`);
@@ -320,7 +313,6 @@ export async function checkForUpdates(): Promise<{ checked: number; notified: nu
         }
       }
 
-      // Update watermark
       await sql`
         UPDATE "_ShipDbWatermark" SET last_checked_at = NOW() WHERE table_key = ${key}
       `;

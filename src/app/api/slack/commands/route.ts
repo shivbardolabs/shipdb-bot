@@ -18,6 +18,14 @@ import {
   listSubscriptions,
   WATCHABLE_TABLES,
 } from "@/lib/subscriptions";
+import {
+  type DbEnvironment,
+  VALID_ENVIRONMENTS,
+  getConfiguredEnvironments,
+  envLabel,
+} from "@/lib/db";
+
+// ─── Help Text ────────────────────────────────────────────────
 
 const HELP_BLOCKS = [
   {
@@ -41,6 +49,12 @@ const HELP_BLOCKS = [
         "`/shipdb search <term>` — Search across clients, users, and customers",
         "`/shipdb sql <SELECT query>` — Run a read-only SQL query",
         "",
+        "*Environments:*",
+        "`/shipdb env` — Show available environments",
+        "Add `--env dev|staging|prod` to any query to target a specific environment",
+        "_Example:_ `/shipdb stats --env dev` or `/shipdb clients --env staging`",
+        "_Default: production_",
+        "",
         "*Subscriptions:*",
         "`/shipdb subscribe <table>` — Subscribe this channel to new-row notifications",
         "`/shipdb unsubscribe <table>` — Unsubscribe this channel",
@@ -62,9 +76,47 @@ const HELP_BLOCKS = [
   },
 ];
 
+// ─── Environment Parsing ──────────────────────────────────────
+
+/**
+ * Extract `--env <value>` or `--env=<value>` from a text string.
+ * Returns the parsed environment and the text with the flag removed.
+ */
+function parseEnvFlag(text: string): { env: DbEnvironment; cleanText: string } {
+  let env: DbEnvironment = "prod";
+  let cleanText = text;
+
+  // Match --env=value or --env value
+  const envEqualsMatch = cleanText.match(/--env=(prod|staging|dev|production|stg)\b/i);
+  const envSpaceMatch = cleanText.match(/--env\s+(prod|staging|dev|production|stg)\b/i);
+
+  const match = envEqualsMatch || envSpaceMatch;
+
+  if (match) {
+    const rawValue = match[1].toLowerCase();
+
+    // Normalize aliases
+    if (rawValue === "production") {
+      env = "prod";
+    } else if (rawValue === "stg") {
+      env = "staging";
+    } else {
+      env = rawValue as DbEnvironment;
+    }
+
+    // Remove the flag from the text
+    cleanText = cleanText.replace(match[0], "").trim();
+    // Clean up any double spaces left behind
+    cleanText = cleanText.replace(/\s{2,}/g, " ").trim();
+  }
+
+  return { env, cleanText };
+}
+
+// ─── Route Handler ────────────────────────────────────────────
+
 export async function POST(req: NextRequest) {
   try {
-    // Read the raw body for signature verification
     const rawBody = await req.text();
     const params = new URLSearchParams(rawBody);
 
@@ -83,15 +135,16 @@ export async function POST(req: NextRequest) {
     const userId = params.get("user_id") || "";
     const channelId = params.get("channel_id") || "";
 
-    // Parse the subcommand
-    const parts = text.split(/\s+/);
+    // Parse --env flag before splitting into subcommand/args
+    const { env, cleanText } = parseEnvFlag(text);
+
+    const parts = cleanText.split(/\s+/);
     const subcommand = (parts[0] || "help").toLowerCase();
     const args = parts.slice(1).join(" ");
 
-    // Use Next.js `after()` to keep the function alive after responding.
     after(async () => {
       try {
-        await processCommand(subcommand, args, responseUrl, userId, channelId);
+        await processCommand(subcommand, args, responseUrl, userId, channelId, env);
       } catch (err) {
         console.error("Command processing error:", err);
         await postToResponseUrl(
@@ -111,10 +164,10 @@ export async function POST(req: NextRequest) {
       }
     });
 
-    // Acknowledge immediately (Slack requires response within 3 seconds)
+    // Acknowledge immediately
     return NextResponse.json({
       response_type: "ephemeral",
-      text: "⏳ Querying database…",
+      text: `⏳ Querying ${env === "prod" ? "" : `${env} `}database…`,
     });
   } catch (err) {
     console.error("Slash command handler error:", err);
@@ -125,12 +178,15 @@ export async function POST(req: NextRequest) {
   }
 }
 
+// ─── Command Processor ───────────────────────────────────────
+
 async function processCommand(
   subcommand: string,
   args: string,
   responseUrl: string,
   userId: string,
-  channelId: string
+  channelId: string,
+  env: DbEnvironment
 ) {
   let result: { text: string; blocks: unknown[] };
 
@@ -139,12 +195,50 @@ async function processCommand(
       result = { text: "ShipDB Commands", blocks: HELP_BLOCKS };
       break;
 
+    case "env":
+    case "envs":
+    case "environments": {
+      const envs = getConfiguredEnvironments();
+      const lines = envs.map((e) => {
+        const status = e.configured ? "✅" : "❌ Not configured";
+        return `${e.label}  \`${e.env}\`  —  ${status}`;
+      });
+
+      result = {
+        text: "Available environments",
+        blocks: [
+          {
+            type: "header",
+            text: { type: "plain_text", text: "🌐 Environments" },
+          },
+          { type: "divider" },
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: lines.join("\n"),
+            },
+          },
+          {
+            type: "context",
+            elements: [
+              {
+                type: "mrkdwn",
+                text: "Add `--env dev`, `--env staging`, or `--env prod` to any query command.\nDefault: *production*",
+              },
+            ],
+          },
+        ],
+      };
+      break;
+    }
+
     case "stats":
-      result = await getStats();
+      result = await getStats(env);
       break;
 
     case "clients":
-      result = await getClients();
+      result = await getClients(env);
       break;
 
     case "client":
@@ -154,24 +248,24 @@ async function processCommand(
           blocks: [{ type: "section", text: { type: "mrkdwn", text: "Usage: `/shipdb client <name>`" } }],
         };
       } else {
-        result = await getClientDetails(args);
+        result = await getClientDetails(args, env);
       }
       break;
 
     case "users":
-      result = await getUsers(args || undefined);
+      result = await getUsers(args || undefined, env);
       break;
 
     case "customers":
-      result = await getCustomers(args || undefined);
+      result = await getCustomers(args || undefined, env);
       break;
 
     case "packages":
-      result = await getPackages(args || undefined);
+      result = await getPackages(args || undefined, env);
       break;
 
     case "stores":
-      result = await getStores();
+      result = await getStores(env);
       break;
 
     case "search":
@@ -181,7 +275,7 @@ async function processCommand(
           blocks: [{ type: "section", text: { type: "mrkdwn", text: "Usage: `/shipdb search <term>`" } }],
         };
       } else {
-        result = await searchAll(args);
+        result = await searchAll(args, env);
       }
       break;
 
@@ -214,12 +308,13 @@ async function processCommand(
           ],
         };
       } else {
-        result = await runRawQuery(args);
+        result = await runRawQuery(args, env);
       }
       break;
     }
 
     // ─── Subscription Commands ───────────────────────────
+    // Note: Subscriptions always operate against the prod database
     case "subscribe": {
       if (!args) {
         const available = Object.keys(WATCHABLE_TABLES).join(", ");
@@ -279,6 +374,5 @@ async function processCommand(
       };
   }
 
-  // Send the actual response via Slack's response_url
   await postToResponseUrl(responseUrl, result.blocks as never[], result.text, true);
 }
