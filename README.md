@@ -60,14 +60,8 @@ Aliases: `production` → `prod`, `stg` → `staging`.
 
 1. Push this repo to your GitHub org
 2. Go to [vercel.com](https://vercel.com) → **New Project** → Import the repo
-3. Add environment variables:
-   - `DATABASE_URL_PROD` — Aurora PostgreSQL connection string for the production database
-   - `DATABASE_URL_STAGING` — Aurora PostgreSQL connection string for the staging database
-   - `DATABASE_URL_DEV` — Aurora PostgreSQL connection string for the dev database
-   - `DATABASE_URL` — (Optional) Fallback for prod if `DATABASE_URL_PROD` is not set
-   - `SLACK_BOT_TOKEN` — The `xoxb-...` token from step 1
-   - `SLACK_SIGNING_SECRET` — From Slack App > Basic Information
-   - `SQL_ALLOWED_USER_IDS` — (Optional) Comma-separated Slack user IDs who can run raw SQL
+3. Environment variables are managed via Infisical and auto-synced to Vercel.
+   See [`docs/secrets-management.md`](docs/secrets-management.md) for setup.
 4. Deploy!
 5. Update the Slash Command Request URL with your Vercel domain
 
@@ -108,6 +102,23 @@ If left empty, all workspace members can run raw SQL queries (still restricted t
 - **Ephemeral responses**: Query results are only visible to the user who ran the command.
 - **Optional SQL restriction**: Raw SQL can be limited to specific team members.
 - **Environment isolation**: Each environment has its own database connection pool. No cross-env leakage.
+
+## Secrets Management (Infisical)
+
+All environment variables are managed through [Infisical](https://infisical.com) and auto-synced to Vercel. **Do not** edit env vars directly in the Vercel dashboard — they will be overwritten.
+
+See [`docs/secrets-management.md`](docs/secrets-management.md) for the full guide.
+
+### Quick Start (Local Dev)
+
+```bash
+# Install the Infisical CLI
+brew install infisical/get-cli/infisical
+
+# Login and run with secrets injected
+infisical login
+infisical run --env=dev -- npm run dev
+```
 
 ## Architecture
 
